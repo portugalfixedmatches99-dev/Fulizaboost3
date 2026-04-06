@@ -162,7 +162,7 @@ public class FulizaBoostController {
             System.out.println("Sending Paynecta Request: " + paynectaPayload);
 
             ResponseEntity<Map> response = restTemplate.postForEntity(
-                    PAYNECTA_BASE_URL + "/payments/initialize",
+                    PAYNECTA_BASE_URL + "/stkpush",
                     request,
                     Map.class
             );
