@@ -1,6 +1,5 @@
 package com.fulizaboost.controller;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fulizaboost.EnvConfig;
 import com.fulizaboost.entity.FulizaBoost;
 import com.fulizaboost.service.FulizaBoostService;
@@ -20,20 +19,21 @@ public class FulizaBoostController {
 
     @Autowired
     private FulizaBoostService boostService;
-
-    // PayHero settings from .env
-    private final String PAYHERO_API = "https://backend.payhero.co.ke/api/v2/payments";
-    private final String payHeroUsername = EnvConfig.dotenv.get("PAYHERO_API_USERNAME");
-    private final String payHeroPassword = EnvConfig.dotenv.get("PAYHERO_API_PASSWORD");
-    private final String payHeroChannelId = EnvConfig.dotenv.get("PAYHERO_CHANNEL_ID");
-    private final String callbackUrl = EnvConfig.dotenv.get("PAYHERO_CALLBACK_URL");
+    private final String PAYNECTA_BASE_URL = "https://paynecta.co.ke/api/v1";
+    private final String paynectaApiKey   = System.getenv("PAYNECTA_API_KEY");
+    private final String paynectaEmail    = System.getenv("PAYNECTA_EMAIL");
+    private final String paynectaLinkCode = System.getenv("PAYNECTA_LINK_CODE");
 
     private RestTemplate restTemplate = new RestTemplate();
 
-    // Build Basic Auth header from username:password
-    private String getPayHeroBasicAuth() {
-        String credentials = payHeroUsername + ":" + payHeroPassword;
-        return "Basic " + Base64.getEncoder().encodeToString(credentials.getBytes());
+    // Build Paynecta headers
+    private HttpHeaders getPaynectaHeaders() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("x-api-key", paynectaApiKey);
+        headers.set("x-email", paynectaEmail);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setAccept(List.of(MediaType.APPLICATION_JSON));
+        return headers;
     }
 
     // ------------------ BOOST ENDPOINTS ------------------
@@ -65,33 +65,24 @@ public class FulizaBoostController {
         return ResponseEntity.ok("Boost deleted successfully");
     }
 
+    // ------------------ PAY ENDPOINT ------------------
+
     @PostMapping("/pay")
     public ResponseEntity<Map<String, Object>> payBoostFee(@RequestBody Map<String, Object> payload) {
         try {
-//            // Clean and format phone number
-//            String phone = ((String) payload.get("phone")).replace("+", "");
-//            if (phone.startsWith("0")) {
-//                phone = "254" + phone.substring(1);
-//            }
+            // Phone validation
             String rawPhone = ((String) payload.get("phone")).replaceAll("\\D", "");
             String phone;
 
-// Fix numbers wrongly sent as 25407XXXXXXXX
             if (rawPhone.startsWith("2540") && rawPhone.length() == 13) {
                 rawPhone = "254" + rawPhone.substring(4);
             }
 
             if (rawPhone.startsWith("254") && rawPhone.length() == 12) {
                 phone = rawPhone;
-            } else if (
-                    (rawPhone.startsWith("07") || rawPhone.startsWith("01")) &&
-                            rawPhone.length() == 10
-            ) {
+            } else if ((rawPhone.startsWith("07") || rawPhone.startsWith("01")) && rawPhone.length() == 10) {
                 phone = "254" + rawPhone.substring(1);
-            } else if (
-                    (rawPhone.startsWith("7") || rawPhone.startsWith("1")) &&
-                            rawPhone.length() == 9
-            ) {
+            } else if ((rawPhone.startsWith("7") || rawPhone.startsWith("1")) && rawPhone.length() == 9) {
                 phone = "254" + rawPhone;
             } else {
                 return ResponseEntity.badRequest().body(Map.of(
@@ -100,7 +91,6 @@ public class FulizaBoostController {
                 ));
             }
 
-// Final Safaricom validation
             if (!phone.matches("^254(7|1)\\d{8}$")) {
                 return ResponseEntity.badRequest().body(Map.of(
                         "success", false,
@@ -108,48 +98,56 @@ public class FulizaBoostController {
                 ));
             }
 
+            int amount = ((Number) payload.get("fee")).intValue();
 
+            // Get the boost ID so we can save the reference back
+            Long boostId = Long.valueOf(payload.get("boostId").toString());
 
-            Double amount = ((Number) payload.get("fee")).doubleValue();
-            String customerName = (String) payload.getOrDefault("customer_name", "Customer");
-            String externalRef = "BOOST-" + UUID.randomUUID();
+            // Build Paynecta STK push payload
+            Map<String, Object> paynectaPayload = new HashMap<>();
+            paynectaPayload.put("link_code", paynectaLinkCode);
+            paynectaPayload.put("mobile_number", phone);
+            paynectaPayload.put("amount", amount);
 
-            // Build PayHero payload
-            Map<String, Object> payHeroPayload = new HashMap<>();
-            payHeroPayload.put("amount", amount.intValue());
-            payHeroPayload.put("phone_number", phone);
-            payHeroPayload.put("channel_id", Integer.parseInt(payHeroChannelId));
-            payHeroPayload.put("provider", "m-pesa");
-            payHeroPayload.put("external_reference", externalRef);
-            payHeroPayload.put("customer_name", customerName);
-            payHeroPayload.put("callback_url", callbackUrl);
+            HttpEntity<Map<String, Object>> request = new HttpEntity<>(paynectaPayload, getPaynectaHeaders());
 
-            HttpHeaders headers = new HttpHeaders();
-            headers.set("Authorization", getPayHeroBasicAuth());
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            headers.setAccept(List.of(MediaType.APPLICATION_JSON));
+            System.out.println("Sending Paynecta Request: " + paynectaPayload);
 
-            HttpEntity<Map<String, Object>> request = new HttpEntity<>(payHeroPayload, headers);
+            ResponseEntity<Map> response = restTemplate.postForEntity(
+                    PAYNECTA_BASE_URL + "/payments/initialize",
+                    request,
+                    Map.class
+            );
 
-            System.out.println("Sending PayHero Request: " + payHeroPayload);
+            System.out.println("Paynecta Response: " + response.getBody());
 
-            ResponseEntity<String> response = restTemplate.postForEntity(PAYHERO_API, request, String.class);
+            // Extract transaction reference from response
+            Map<String, Object> responseBody = response.getBody();
+            String reference = null;
+            if (responseBody != null && responseBody.containsKey("data")) {
+                Map<String, Object> data = (Map<String, Object>) responseBody.get("data");
+                reference = (String) data.get("transaction_reference");
+            }
 
-            System.out.println("PayHero Response: " + response.getBody());
+            // Save the reference to the boost so the webhook can find it later
+            if (reference != null) {
+                FulizaBoost boost = boostService.getBoostById(boostId);
+                boost.setExternalReference(reference);
+                boostService.saveBoost(boost);
+            }
 
             return ResponseEntity.ok(Map.of(
                     "success", true,
-                    "message", "Payment initiated successfully",
-                    "data", response.getBody(),
-                    "reference", externalRef
+                    "message", "Payment initiated. Check your phone for the M-Pesa prompt.",
+                    "reference", reference != null ? reference : ""
             ));
 
         } catch (org.springframework.web.client.HttpClientErrorException e) {
-            System.err.println("PayHero Error Response: " + e.getResponseBodyAsString());
+            System.err.println("Paynecta Error Response: " + e.getResponseBodyAsString());
             return ResponseEntity.status(e.getStatusCode())
                     .body(Map.of(
                             "success", false,
-                            "error", "PayHero API error",
+                            "error", "Paynecta API error",
                             "details", e.getResponseBodyAsString()
                     ));
         } catch (Exception e) {
@@ -162,51 +160,82 @@ public class FulizaBoostController {
         }
     }
 
-    // ------------------ PAYHERO CALLBACK ------------------
+    // ------------------ PAYNECTA WEBHOOK CALLBACK ------------------
+    // Register this URL in your Paynecta dashboard: https://yourserver.com/api/boosts/pay/callback
 
     @PostMapping("/pay/callback")
-    public ResponseEntity<String> handlePayHeroCallback(@RequestBody Map<String, Object> callbackData) {
-        Boolean success = (Boolean) callbackData.get("success");
-        String reference = (String) callbackData.get("reference");
+    public ResponseEntity<String> handlePaynectaWebhook(@RequestBody Map<String, Object> webhookData) {
+        try {
+            System.out.println("Paynecta Webhook received: " + webhookData);
 
-        if (Boolean.TRUE.equals(success)) {
-            FulizaBoost boost = boostService.getBoostByReference(reference);
-            if (boost != null) {
-                boost.setPaid(true);
-                boost.setPaymentDate(LocalDateTime.now());
-                boostService.saveBoost(boost);
+            String event = (String) webhookData.get("event");
+            Map<String, Object> data = (Map<String, Object>) webhookData.get("data");
+
+            if (data == null) return ResponseEntity.ok("No data");
+
+            String reference = (String) data.get("transaction_reference");
+            String status    = (String) data.get("status");
+
+            if ("payment.completed".equals(event) || "completed".equalsIgnoreCase(status)) {
+                FulizaBoost boost = boostService.getBoostByReference(reference);
+                if (boost != null) {
+                    boost.setPaid(true);
+                    boost.setPaymentDate(LocalDateTime.now());
+                    boostService.saveBoost(boost);
+                    System.out.println("Boost marked paid for reference: " + reference);
+                }
             }
+
+        } catch (Exception e) {
+            System.err.println("Webhook processing error: " + e.getMessage());
         }
-        return ResponseEntity.ok("Callback received");
+
+        return ResponseEntity.ok("Webhook received");
+    }
+
+    // ------------------ QUERY PAYMENT STATUS ------------------
+
+    @GetMapping("/pay/status/{reference}")
+    public ResponseEntity<Map<String, Object>> queryPaymentStatus(@PathVariable String reference) {
+        try {
+            HttpEntity<Void> request = new HttpEntity<>(getPaynectaHeaders());
+
+            ResponseEntity<Map> response = restTemplate.exchange(
+                    PAYNECTA_BASE_URL + "/payments/status/" + reference,
+                    HttpMethod.GET,
+                    request,
+                    Map.class
+            );
+
+            return ResponseEntity.ok(Map.of(
+                    "success", true,
+                    "data", response.getBody()
+            ));
+
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("success", false, "error", e.getMessage()));
+        }
     }
 
     // ------------------ REPORTING ENDPOINTS ------------------
 
     @GetMapping("/paid")
-    public ResponseEntity<List<FulizaBoost>> getPaidBoosts(
-            @RequestParam(required = false) String date
-    ) {
-        List<FulizaBoost> boosts;
-        if (date != null) {
-            boosts = boostService.getPaidBoostsByDate(date);
-        } else {
-            boosts = boostService.getAllPaidBoosts();
-        }
+    public ResponseEntity<List<FulizaBoost>> getPaidBoosts(@RequestParam(required = false) String date) {
+        List<FulizaBoost> boosts = (date != null)
+                ? boostService.getPaidBoostsByDate(date)
+                : boostService.getAllPaidBoosts();
         return ResponseEntity.ok(boosts);
     }
 
     @GetMapping("/paid/total")
-    public ResponseEntity<Map<String, Object>> getTotalFees(
-            @RequestParam(required = false) String date
-    ) {
+    public ResponseEntity<Map<String, Object>> getTotalFees(@RequestParam(required = false) String date) {
         double total = (date != null) ? boostService.getTotalFeesByDate(date) : boostService.getTotalFees();
         return ResponseEntity.ok(Map.of("total", total));
     }
 
     @GetMapping("/paid/count")
-    public ResponseEntity<Map<String, Object>> getTotalCustomers(
-            @RequestParam(required = false) String date
-    ) {
+    public ResponseEntity<Map<String, Object>> getTotalCustomers(@RequestParam(required = false) String date) {
         int count = (date != null) ? boostService.getPaidBoostCountByDate(date) : boostService.getPaidBoostCount();
         return ResponseEntity.ok(Map.of("count", count));
     }
