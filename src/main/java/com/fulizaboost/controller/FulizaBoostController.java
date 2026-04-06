@@ -1,6 +1,5 @@
 package com.fulizaboost.controller;
 
-import com.fulizaboost.EnvConfig;
 import com.fulizaboost.entity.FulizaBoost;
 import com.fulizaboost.service.FulizaBoostService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,18 +18,20 @@ public class FulizaBoostController {
 
     @Autowired
     private FulizaBoostService boostService;
-    private final String PAYNECTA_BASE_URL = "https://paynecta.co.ke/api/v1";
-    private final String paynectaApiKey   = System.getenv("PAYNECTA_API_KEY");
-    private final String paynectaEmail    = System.getenv("PAYNECTA_EMAIL");
-    private final String paynectaLinkCode = System.getenv("PAYNECTA_LINK_CODE");
+
+    private final String PAYNECTA_BASE_URL  = "https://paynecta.co.ke/api/v1";
+    private final String paynectaApiKey     = System.getenv("PAYNECTA_API_KEY");
+    private final String paynectaEmail      = System.getenv("PAYNECTA_EMAIL");
+    private final String paynectaLinkCode   = System.getenv("PAYNECTA_LINK_CODE");
 
     private RestTemplate restTemplate = new RestTemplate();
 
-    // Build Paynecta headers
+    // ------------------ PAYNECTA HEADERS ------------------
+
     private HttpHeaders getPaynectaHeaders() {
         HttpHeaders headers = new HttpHeaders();
-        headers.set("x-api-key", paynectaApiKey);
-        headers.set("x-email", paynectaEmail);
+        headers.set("X-API-Key", paynectaApiKey);         // FIXED: was "x-api-key"
+        headers.set("X-User-Email", paynectaEmail);        // FIXED: was "x-email"
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setAccept(List.of(MediaType.APPLICATION_JSON));
         return headers;
@@ -152,7 +153,7 @@ public class FulizaBoostController {
 
             // ------------------ PAYNECTA REQUEST ------------------
             Map<String, Object> paynectaPayload = new HashMap<>();
-            paynectaPayload.put("link_code", paynectaLinkCode);
+            paynectaPayload.put("code", paynectaLinkCode);        // FIXED: was "link_code"
             paynectaPayload.put("mobile_number", phone);
             paynectaPayload.put("amount", amount);
 
@@ -162,7 +163,7 @@ public class FulizaBoostController {
             System.out.println("Sending Paynecta Request: " + paynectaPayload);
 
             ResponseEntity<Map> response = restTemplate.postForEntity(
-                    PAYNECTA_BASE_URL + "/stkpush",
+                    PAYNECTA_BASE_URL + "/payment/initialize",    // FIXED: was "/stkpush"
                     request,
                     Map.class
             );
@@ -220,8 +221,8 @@ public class FulizaBoostController {
                     ));
         }
     }
+
     // ------------------ PAYNECTA WEBHOOK CALLBACK ------------------
-    // Register this URL in your Paynecta dashboard: https://yourserver.com/api/boosts/pay/callback
 
     @PostMapping("/pay/callback")
     public ResponseEntity<String> handlePaynectaWebhook(@RequestBody Map<String, Object> webhookData) {
@@ -261,7 +262,7 @@ public class FulizaBoostController {
             HttpEntity<Void> request = new HttpEntity<>(getPaynectaHeaders());
 
             ResponseEntity<Map> response = restTemplate.exchange(
-                    PAYNECTA_BASE_URL + "/payments/status/" + reference,
+                    PAYNECTA_BASE_URL + "/payment/status?transaction_reference=" + reference,  // FIXED: was "/payments/status/{reference}"
                     HttpMethod.GET,
                     request,
                     Map.class
