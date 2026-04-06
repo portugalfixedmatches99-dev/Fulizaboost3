@@ -70,8 +70,38 @@ public class FulizaBoostController {
     @PostMapping("/pay")
     public ResponseEntity<Map<String, Object>> payBoostFee(@RequestBody Map<String, Object> payload) {
         try {
-            // Phone validation
-            String rawPhone = ((String) payload.get("phone")).replaceAll("\\D", "");
+
+            // ------------------ VALIDATION ------------------
+            if (payload == null) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "success", false,
+                        "error", "Request body is missing"
+                ));
+            }
+
+            if (!payload.containsKey("phone") || payload.get("phone") == null) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "success", false,
+                        "error", "phone is required"
+                ));
+            }
+
+            if (!payload.containsKey("fee") || payload.get("fee") == null) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "success", false,
+                        "error", "fee is required"
+                ));
+            }
+
+            if (!payload.containsKey("boostId") || payload.get("boostId") == null) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "success", false,
+                        "error", "boostId is required"
+                ));
+            }
+
+            // ------------------ PHONE PROCESSING ------------------
+            String rawPhone = payload.get("phone").toString().replaceAll("\\D", "");
             String phone;
 
             if (rawPhone.startsWith("2540") && rawPhone.length() == 13) {
@@ -98,18 +128,36 @@ public class FulizaBoostController {
                 ));
             }
 
-            int amount = ((Number) payload.get("fee")).intValue();
+            // ------------------ SAFE PARSING ------------------
+            int amount;
+            Long boostId;
 
-            // Get the boost ID so we can save the reference back
-            Long boostId = Long.valueOf(payload.get("boostId").toString());
+            try {
+                amount = Integer.parseInt(payload.get("fee").toString());
+            } catch (Exception e) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "success", false,
+                        "error", "Invalid fee value"
+                ));
+            }
 
-            // Build Paynecta STK push payload
+            try {
+                boostId = Long.parseLong(payload.get("boostId").toString());
+            } catch (Exception e) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "success", false,
+                        "error", "Invalid boostId"
+                ));
+            }
+
+            // ------------------ PAYNECTA REQUEST ------------------
             Map<String, Object> paynectaPayload = new HashMap<>();
             paynectaPayload.put("link_code", paynectaLinkCode);
             paynectaPayload.put("mobile_number", phone);
             paynectaPayload.put("amount", amount);
 
-            HttpEntity<Map<String, Object>> request = new HttpEntity<>(paynectaPayload, getPaynectaHeaders());
+            HttpEntity<Map<String, Object>> request =
+                    new HttpEntity<>(paynectaPayload, getPaynectaHeaders());
 
             System.out.println("Sending Paynecta Request: " + paynectaPayload);
 
@@ -121,19 +169,29 @@ public class FulizaBoostController {
 
             System.out.println("Paynecta Response: " + response.getBody());
 
-            // Extract transaction reference from response
+            // ------------------ RESPONSE HANDLING ------------------
             Map<String, Object> responseBody = response.getBody();
             String reference = null;
+
             if (responseBody != null && responseBody.containsKey("data")) {
-                Map<String, Object> data = (Map<String, Object>) responseBody.get("data");
-                reference = (String) data.get("transaction_reference");
+                Object dataObj = responseBody.get("data");
+
+                if (dataObj instanceof Map) {
+                    Map<String, Object> data = (Map<String, Object>) dataObj;
+                    reference = data.get("transaction_reference") != null
+                            ? data.get("transaction_reference").toString()
+                            : null;
+                }
             }
 
-            // Save the reference to the boost so the webhook can find it later
+            // ------------------ SAVE REFERENCE ------------------
             if (reference != null) {
                 FulizaBoost boost = boostService.getBoostById(boostId);
-                boost.setExternalReference(reference);
-                boostService.saveBoost(boost);
+
+                if (boost != null) {
+                    boost.setExternalReference(reference);
+                    boostService.saveBoost(boost);
+                }
             }
 
             return ResponseEntity.ok(Map.of(
@@ -144,22 +202,24 @@ public class FulizaBoostController {
 
         } catch (org.springframework.web.client.HttpClientErrorException e) {
             System.err.println("Paynecta Error Response: " + e.getResponseBodyAsString());
+
             return ResponseEntity.status(e.getStatusCode())
                     .body(Map.of(
                             "success", false,
                             "error", "Paynecta API error",
                             "details", e.getResponseBodyAsString()
                     ));
+
         } catch (Exception e) {
             e.printStackTrace();
+
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of(
                             "success", false,
-                            "error", e.getMessage()
+                            "error", "Server error: " + e.getMessage()
                     ));
         }
     }
-
     // ------------------ PAYNECTA WEBHOOK CALLBACK ------------------
     // Register this URL in your Paynecta dashboard: https://yourserver.com/api/boosts/pay/callback
 
