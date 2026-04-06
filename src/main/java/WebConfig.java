@@ -11,7 +11,7 @@ public class WebConfig {
             @Override
             public void addCorsMappings(CorsRegistry registry) {
                 registry.addMapping("/**")
-                        .allowedOrigins("https://fuliza-boost2.vercel.app/")
+                        .allowedOrigins("https://fuliza1-boost.vercel.app/")
                         .allowedMethods("GET","POST","PUT","DELETE","OPTIONS");
             }
         };
